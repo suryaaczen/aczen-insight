@@ -9,8 +9,7 @@ interface ApiResult { domain?: string; answer: string; sources?: Source[] }
 
 type Message =
   | { role: "user"; content: string; domain: Domain }
-  | { role: "assistant"; content: string; domain?: string; sources?: Source[] }
-  | { role: "assistant"; loading: true; content?: undefined };
+  | { role: "assistant"; loading?: boolean; content?: string; domain?: string; sources?: Source[] };
 
 const DOMAINS: { id: Domain; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: "all", label: "All", icon: Globe },
@@ -186,7 +185,7 @@ function MessageBubble({ msg }: { msg: Message }) {
       </div>
     );
   }
-  if ("loading" in msg && msg.loading) {
+  if (msg.loading) {
     return (
       <div className="flex gap-3">
         <Avatar />
