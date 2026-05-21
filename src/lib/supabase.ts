@@ -18,7 +18,7 @@ if (!isValid) {
 // Use a harmless placeholder so createClient doesn't throw at module load.
 // Actual calls will fail with a clearer error in streamChat() when CHAT_FN_URL is empty.
 export const supabase = createClient(
-  isValid ? url : "https://placeholder.supabase.co",
+  isValid ? url : "https://fgnpkomprmrjeqiwtefu.supabase.co",
   isValid ? anonKey : "placeholder-anon-key",
   {
     auth: {
