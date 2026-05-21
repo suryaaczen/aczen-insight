@@ -1,39 +1,147 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Loader2, ExternalLink, Sparkles, Paperclip, Scale, Landmark, Banknote, Globe } from "lucide-react";
-import { API_BASE_URL } from "@/lib/api";
+import {
+  ArrowUp,
+  Loader2,
+  ExternalLink,
+  Sparkles,
+  Paperclip,
+  Globe,
+  Square,
+  Share2,
+  Check,
+  Copy,
+  WandSparkles,
+} from "lucide-react";
+import {
+  generateArtifact,
+  streamChat,
+  type ChatArtifact,
+  type ChatMessage,
+  type ChatSettings,
+  type ChatSource,
+} from "@/lib/chat";
+import Markdown from "@/components/Markdown";
+import {
+  appendMessage,
+  createConversation,
+  ensureShareToken,
+  listMessages,
+  shareUrl,
+  type Conversation,
+} from "@/lib/conversations";
 
-type Domain = "all" | "legal" | "finance" | "banking";
+interface UiMessage {
+  role: "user" | "assistant" | "artifact";
+  content: string;
+  sources?: ChatSource[];
+  artifact?: ChatArtifact;
+  streaming?: boolean;
+  error?: boolean;
+}
 
-interface Source { title: string; snippet: string; link: string }
-interface ApiResult { domain?: string; answer: string; sources?: Source[] }
+const ARTIFACT_PREFIX = "__ACZEN_ARTIFACT__";
 
-type Message =
-  | { role: "user"; content: string; domain: Domain }
-  | { role: "assistant"; loading?: boolean; content?: string; domain?: string; sources?: Source[] };
+function encodeArtifact(artifact: ChatArtifact) {
+  return `${ARTIFACT_PREFIX}${JSON.stringify(artifact)}`;
+}
 
-const DOMAINS: { id: Domain; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: "all", label: "All", icon: Globe },
-  { id: "legal", label: "Legal", icon: Scale },
-  { id: "finance", label: "Finance", icon: Landmark },
-  { id: "banking", label: "Banking", icon: Banknote },
-];
+function decodeArtifact(content: string): ChatArtifact | null {
+  if (!content.startsWith(ARTIFACT_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(content.slice(ARTIFACT_PREFIX.length));
+    if (typeof parsed.title === "string" && typeof parsed.svg === "string") return parsed;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function shouldOfferArtifact(content: string) {
+  if (content.length < 260) return false;
+  return /concept|architecture|flow|process|pipeline|algorithm|system|network|token|bucket|queue|cache|database|auth|rate|compare|difference|workflow|lifecycle|diagram|visual/i.test(
+    content,
+  );
+}
 
 const SUGGESTED = [
-  { q: "GST on export of services in India", tag: "Finance" },
-  { q: "RBI repo rate impact on home loans", tag: "Banking" },
-  { q: "Section 138 NI Act cheque bounce", tag: "Legal" },
-  { q: "SEBI SME IPO regulations 2024", tag: "Finance" },
-  { q: "TDS rates for freelancers FY 2025-26", tag: "Finance" },
-  { q: "IBC insolvency process timeline", tag: "Legal" },
+  { q: "Explain GST input tax credit in simple terms", tag: "Finance" },
+  { q: "Write a Python script to dedupe a CSV by email", tag: "Code" },
+  { q: "Draft an email asking for a salary review", tag: "Writing" },
+  { q: "RBI repo rate impact on home loan EMIs", tag: "Banking" },
+  { q: "Summarize Section 138 NI Act cheque bounce", tag: "Legal" },
+  { q: "What's the difference between TDS and TCS?", tag: "Tax" },
 ];
 
-export default function SearchTab() {
+interface SearchTabProps {
+  onMessageSent?: () => void;
+  activeConversationId: string | null;
+  onConversationChange: (id: string | null) => void;
+  onConversationListChanged: () => void;
+  settings: ChatSettings;
+}
+
+export default function SearchTab({
+  onMessageSent,
+  activeConversationId,
+  onConversationChange,
+  onConversationListChanged,
+  settings,
+}: SearchTabProps) {
   const [input, setInput] = useState("");
-  const [domain, setDomain] = useState<Domain>("all");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [useWeb, setUseWeb] = useState(false);
+  const [messages, setMessages] = useState<UiMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [activeConv, setActiveConv] = useState<Conversation | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const convIdRef = useRef<string | null>(activeConversationId);
+  // Tracks the conversation whose messages are currently rendered. When we
+  // create a conversation inside send() we set this to the new id so the
+  // effect below skips re-fetching and clobbering the in-flight stream.
+  const loadedConvIdRef = useRef<string | null>(activeConversationId);
+
+  useEffect(() => {
+    convIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeConversationId) {
+      loadedConvIdRef.current = null;
+      setMessages([]);
+      setActiveConv(null);
+      return;
+    }
+    if (loadedConvIdRef.current === activeConversationId) return;
+    loadedConvIdRef.current = activeConversationId;
+    (async () => {
+      const stored = await listMessages(activeConversationId);
+      if (cancelled || loadedConvIdRef.current !== activeConversationId) return;
+      setMessages(
+        stored
+          .filter((m) => m.role !== "system")
+          .map((m) => {
+            const artifact = decodeArtifact(m.content);
+            if (artifact) {
+              return {
+                role: "artifact",
+                content: "",
+                artifact,
+              } satisfies UiMessage;
+            }
+            return {
+              role: m.role as "user" | "assistant",
+              content: m.content,
+              sources: m.sources ?? undefined,
+            } satisfies UiMessage;
+          }),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeConversationId]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -51,27 +159,184 @@ export default function SearchTab() {
     if (!q || loading) return;
     setInput("");
     if (taRef.current) taRef.current.style.height = "auto";
-    setMessages((m) => [...m, { role: "user", content: q, domain }, { role: "assistant", loading: true }]);
+
+    let convId = convIdRef.current;
+    if (!convId) {
+      const created = await createConversation(q);
+      if (!created) {
+        setMessages((m) => [
+          ...m,
+          { role: "user", content: q },
+          {
+            role: "assistant",
+            content: "Could not create a chat session. Check Supabase config.",
+            error: true,
+          },
+        ]);
+        return;
+      }
+      convId = created.id;
+      convIdRef.current = convId;
+      // Mark as already loaded so the load effect below doesn't race with the
+      // streaming response and overwrite the in-memory messages.
+      loadedConvIdRef.current = convId;
+      setActiveConv(created);
+      onConversationChange(convId);
+      onConversationListChanged();
+    }
+
+    const nextHistory: UiMessage[] = [
+      ...messages,
+      { role: "user", content: q },
+      { role: "assistant", content: "", streaming: true },
+    ];
+    setMessages(nextHistory);
     setLoading(true);
+
+    // Persist the user turn immediately so it's safe even if the assistant
+    // stream is aborted.
+    appendMessage(convId, "user", q).catch(() => {});
+
+    const apiHistory: ChatMessage[] = nextHistory
+      .slice(0, -1)
+      .filter((m) => m.role !== "artifact")
+      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    let finalSources: ChatSource[] | undefined;
+    let finalContent = "";
+
+    await streamChat(apiHistory, {
+      useWeb,
+      settings,
+      signal: controller.signal,
+      onSources: (sources) => {
+        finalSources = sources;
+        setMessages((m) => {
+          const copy = [...m];
+          const last = copy[copy.length - 1];
+          if (last && last.role === "assistant") {
+            copy[copy.length - 1] = { ...last, sources };
+          }
+          return copy;
+        });
+      },
+      onDelta: (delta) => {
+        finalContent += delta;
+        setMessages((m) => {
+          const copy = [...m];
+          const last = copy[copy.length - 1];
+          if (last && last.role === "assistant") {
+            copy[copy.length - 1] = {
+              ...last,
+              content: last.content + delta,
+              streaming: true,
+            };
+          }
+          return copy;
+        });
+      },
+      onDone: async () => {
+        setMessages((m) => {
+          const copy = [...m];
+          const last = copy[copy.length - 1];
+          if (last && last.role === "assistant") {
+            copy[copy.length - 1] = { ...last, streaming: false };
+          }
+          return copy;
+        });
+        setLoading(false);
+        abortRef.current = null;
+        if (convId && finalContent) {
+          appendMessage(convId, "assistant", finalContent, finalSources).then(
+            () => onConversationListChanged(),
+          );
+        }
+        onMessageSent?.();
+      },
+      onError: (err) => {
+        setMessages((m) => {
+          const copy = [...m];
+          copy[copy.length - 1] = {
+            role: "assistant",
+            content: err,
+            error: true,
+          };
+          return copy;
+        });
+        setLoading(false);
+        abortRef.current = null;
+        onMessageSent?.();
+      },
+    });
+  };
+
+  const stop = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+    setMessages((m) => {
+      const copy = [...m];
+      const last = copy[copy.length - 1];
+      if (last && last.role === "assistant" && last.streaming) {
+        copy[copy.length - 1] = { ...last, streaming: false };
+      }
+      return copy;
+    });
+  };
+
+  const createArtifact = async (afterIndex: number) => {
+    if (loading) return;
+    const target = messages[afterIndex];
+    if (!target || target.role !== "assistant" || target.error || target.streaming) return;
+
+    const apiHistory: ChatMessage[] = messages
+      .slice(0, afterIndex + 1)
+      .filter((m) => m.role !== "artifact")
+      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+
+    const loadingArtifact: UiMessage = {
+      role: "artifact",
+      content: "",
+      streaming: true,
+    };
+    setMessages((current) => [
+      ...current.slice(0, afterIndex + 1),
+      loadingArtifact,
+      ...current.slice(afterIndex + 1),
+    ]);
+
     try {
-      const res = await fetch(`${API_BASE_URL}/api/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q, domain }),
+      const artifact = await generateArtifact(apiHistory, target.content, settings);
+      setMessages((current) => {
+        const copy = [...current];
+        const idx = copy.findIndex((m, i) => i > afterIndex && m.role === "artifact" && m.streaming);
+        if (idx !== -1) {
+          copy[idx] = { role: "artifact", content: "", artifact };
+        }
+        return copy;
       });
-      if (!res.ok) throw new Error(`Request failed (${res.status})`);
-      const data = (await res.json()) as ApiResult;
-      setMessages((m) => [
-        ...m.slice(0, -1),
-        { role: "assistant", content: data.answer, domain: data.domain, sources: data.sources },
-      ]);
+      if (convIdRef.current) {
+        appendMessage(convIdRef.current, "assistant", encodeArtifact(artifact)).then(() =>
+          onConversationListChanged(),
+        );
+      }
+      onMessageSent?.();
     } catch (e) {
-      setMessages((m) => [
-        ...m.slice(0, -1),
-        { role: "assistant", content: e instanceof Error ? e.message : "Something went wrong." },
-      ]);
-    } finally {
-      setLoading(false);
+      setMessages((current) => {
+        const copy = [...current];
+        const idx = copy.findIndex((m, i) => i > afterIndex && m.role === "artifact" && m.streaming);
+        if (idx !== -1) {
+          copy[idx] = {
+            role: "artifact",
+            content: e instanceof Error ? e.message : "Could not generate artifact.",
+            error: true,
+          };
+        }
+        return copy;
+      });
     }
   };
 
@@ -86,6 +351,14 @@ export default function SearchTab() {
 
   return (
     <div className="h-full flex flex-col">
+      {!empty && activeConversationId && (
+        <div className="border-b border-border/60 px-4 sm:px-6 py-2 flex items-center justify-end">
+          <ShareButton
+            conversationId={activeConversationId}
+            initialToken={activeConv?.share_token ?? null}
+          />
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto">
         {empty ? (
           <div className="min-h-full flex flex-col items-center justify-center px-4 py-12">
@@ -98,7 +371,7 @@ export default function SearchTab() {
                   {greeting()}, what's on your mind?
                 </h1>
                 <p className="text-muted-foreground mt-3">
-                  Ask anything about GST, RBI, SEBI, or Indian legal compliance.
+                  Ask anything — code, writing, math, or Indian legal / finance / banking.
                 </p>
               </div>
 
@@ -108,9 +381,10 @@ export default function SearchTab() {
                 onKey={onKey}
                 autoGrow={autoGrow}
                 send={() => send(input)}
+                stop={stop}
                 loading={loading}
-                domain={domain}
-                setDomain={setDomain}
+                useWeb={useWeb}
+                setUseWeb={setUseWeb}
                 taRef={taRef}
                 large
               />
@@ -126,7 +400,9 @@ export default function SearchTab() {
                       onClick={() => send(s.q)}
                       className="text-left px-4 py-3 rounded-xl border border-border bg-card hover:border-primary/40 hover:bg-accent/40 transition group"
                     >
-                      <div className="text-[10px] uppercase tracking-wider text-primary font-semibold">{s.tag}</div>
+                      <div className="text-[10px] uppercase tracking-wider text-primary font-semibold">
+                        {s.tag}
+                      </div>
                       <div className="text-sm mt-0.5 text-foreground">{s.q}</div>
                     </button>
                   ))}
@@ -137,7 +413,15 @@ export default function SearchTab() {
         ) : (
           <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 space-y-8">
             {messages.map((m, i) => (
-              <MessageBubble key={i} msg={m} />
+              <MessageBubble
+                key={i}
+                msg={m}
+                onGenerateArtifact={
+                  m.role === "assistant" && shouldOfferArtifact(m.content)
+                    ? () => createArtifact(i)
+                    : undefined
+                }
+              />
             ))}
             <div ref={endRef} />
           </div>
@@ -153,13 +437,14 @@ export default function SearchTab() {
               onKey={onKey}
               autoGrow={autoGrow}
               send={() => send(input)}
+              stop={stop}
               loading={loading}
-              domain={domain}
-              setDomain={setDomain}
+              useWeb={useWeb}
+              setUseWeb={setUseWeb}
               taRef={taRef}
             />
             <p className="text-[11px] text-muted-foreground text-center mt-2">
-              Aczen can make mistakes. Verify important compliance details.
+              Aczen can make mistakes. Verify important details.
             </p>
           </div>
         </div>
@@ -175,7 +460,94 @@ function greeting() {
   return "Good evening";
 }
 
-function MessageBubble({ msg }: { msg: Message }) {
+function ShareButton({
+  conversationId,
+  initialToken,
+}: {
+  conversationId: string;
+  initialToken: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const [token, setToken] = useState<string | null>(initialToken);
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    setToken(initialToken);
+  }, [initialToken, conversationId]);
+
+  const share = async () => {
+    setLoading(true);
+    const t = await ensureShareToken(conversationId);
+    setToken(t);
+    setLoading(false);
+    setOpen(true);
+  };
+
+  const url = token ? shareUrl(token) : "";
+
+  const copy = async () => {
+    if (!url) return;
+    await navigator.clipboard.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={share}
+        disabled={loading}
+        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border bg-card hover:border-primary/40 hover:text-primary transition disabled:opacity-60"
+      >
+        {loading ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <Share2 className="size-3.5" />
+        )}
+        Share
+      </button>
+      {open && url && (
+        <div
+          className="absolute right-0 top-full mt-2 w-80 rounded-xl border border-border bg-card shadow-lg p-3 z-20"
+          onMouseLeave={() => setOpen(false)}
+        >
+          <p className="text-xs text-muted-foreground mb-2">
+            Anyone with this link can read this chat.
+          </p>
+          <div className="flex items-center gap-2">
+            <input
+              readOnly
+              value={url}
+              onFocus={(e) => e.currentTarget.select()}
+              className="flex-1 bg-background border border-border rounded-md px-2 py-1.5 text-xs font-mono outline-none focus:border-primary/50"
+            />
+            <button
+              type="button"
+              onClick={copy}
+              className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90"
+            >
+              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MessageBubble({
+  msg,
+  onGenerateArtifact,
+}: {
+  msg: UiMessage;
+  onGenerateArtifact?: () => void;
+}) {
+  if (msg.role === "artifact") {
+    return <ArtifactBubble msg={msg} />;
+  }
   if (msg.role === "user") {
     return (
       <div className="flex justify-end">
@@ -185,46 +557,141 @@ function MessageBubble({ msg }: { msg: Message }) {
       </div>
     );
   }
-  if (msg.loading) {
-    return (
-      <div className="flex gap-3">
-        <Avatar />
-        <div className="flex items-center gap-2 text-muted-foreground text-sm pt-1.5">
-          <Loader2 className="size-3.5 animate-spin" />
-          Thinking…
-        </div>
-      </div>
-    );
-  }
+  const isEmpty = !msg.content && msg.streaming;
   return (
     <div className="flex gap-3">
       <Avatar />
       <div className="flex-1 min-w-0 space-y-3">
-        <div className="text-[15px] leading-relaxed text-foreground whitespace-pre-wrap">
-          {msg.content}
-        </div>
+        {isEmpty ? (
+          <div className="flex items-center gap-2 text-muted-foreground text-sm pt-1.5">
+            <Loader2 className="size-3.5 animate-spin" />
+            Thinking…
+          </div>
+        ) : msg.error ? (
+          <div className="text-[15px] leading-relaxed whitespace-pre-wrap text-destructive">
+            {msg.content}
+          </div>
+        ) : (
+          <div className="relative">
+            <Markdown>{msg.content}</Markdown>
+            {msg.streaming && (
+              <span className="inline-block w-1.5 h-4 ml-0.5 bg-primary/70 align-middle animate-pulse" />
+            )}
+          </div>
+        )}
         {msg.sources && msg.sources.length > 0 && (
           <div className="pt-2">
-            <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Sources</div>
-            <div className="grid sm:grid-cols-2 gap-2">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">
+              Web sources
+            </div>
+            <div className="grid sm:grid-cols-2 gap-3">
               {msg.sources.map((s, i) => (
-                <a
-                  key={i}
-                  href={s.link}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block rounded-lg border border-border bg-card p-3 hover:border-primary/40 transition group"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="text-sm font-medium text-foreground group-hover:text-primary line-clamp-1">{s.title}</div>
-                    <ExternalLink className="size-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{s.snippet}</p>
-                </a>
+                <SourceCard key={i} source={s} index={i} />
               ))}
             </div>
           </div>
         )}
+        {onGenerateArtifact && !msg.streaming && !msg.error && (
+          <button
+            type="button"
+            onClick={onGenerateArtifact}
+            className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border bg-card text-muted-foreground hover:border-primary/40 hover:text-primary transition"
+          >
+            <WandSparkles className="size-3.5" />
+            Generate artifact
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SourceCard({ source, index }: { source: ChatSource; index: number }) {
+  return (
+    <a
+      href={source.link}
+      target="_blank"
+      rel="noreferrer"
+      className="block overflow-hidden rounded-lg border border-border bg-card hover:border-primary/40 transition group"
+    >
+      {source.imageUrl && (
+        <div className="aspect-[16/9] overflow-hidden bg-accent/50 border-b border-border/60">
+          <img
+            src={source.imageUrl}
+            alt=""
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            onError={(e) => {
+              e.currentTarget.parentElement?.classList.add("hidden");
+            }}
+            className="h-full w-full object-cover transition group-hover:scale-[1.02]"
+          />
+        </div>
+      )}
+      <div className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="text-sm font-medium text-foreground group-hover:text-primary line-clamp-2">
+            [{index + 1}] {source.title}
+          </div>
+          <ExternalLink className="size-3.5 text-muted-foreground shrink-0 mt-0.5" />
+        </div>
+        <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{source.snippet}</p>
+        <div className="mt-2 text-[11px] text-muted-foreground truncate">
+          {source.siteName || safeHost(source.link)}
+        </div>
+      </div>
+    </a>
+  );
+}
+
+function safeHost(link: string) {
+  try {
+    return new URL(link).hostname.replace(/^www\./, "");
+  } catch {
+    return link;
+  }
+}
+
+function ArtifactBubble({ msg }: { msg: UiMessage }) {
+  if (msg.streaming) {
+    return (
+      <div className="flex gap-3">
+        <Avatar />
+        <div className="rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground flex items-center gap-2">
+          <Loader2 className="size-3.5 animate-spin" />
+          Generating visual artifact...
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.error || !msg.artifact) {
+    return (
+      <div className="flex gap-3">
+        <Avatar />
+        <div className="text-[15px] leading-relaxed whitespace-pre-wrap text-destructive">
+          {msg.content || "Could not generate artifact."}
+        </div>
+      </div>
+    );
+  }
+
+  const srcDoc = `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#fbfaf7;color:#222;font-family:Inter,system-ui,sans-serif}svg{display:block;width:100%;height:auto}</style></head><body>${msg.artifact.svg}</body></html>`;
+
+  return (
+    <div className="flex gap-3">
+      <Avatar />
+      <div className="flex-1 min-w-0 rounded-xl border border-border bg-card overflow-hidden">
+        <div className="px-3 py-2 border-b border-border/60 flex items-center gap-2">
+          <WandSparkles className="size-3.5 text-primary" />
+          <div className="text-sm font-medium truncate">{msg.artifact.title}</div>
+        </div>
+        <iframe
+          title={msg.artifact.title}
+          sandbox=""
+          srcDoc={srcDoc}
+          className="w-full h-[420px] bg-white"
+        />
       </div>
     </div>
   );
@@ -244,23 +711,39 @@ interface ComposerProps {
   onKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   autoGrow: () => void;
   send: () => void;
+  stop: () => void;
   loading: boolean;
-  domain: Domain;
-  setDomain: (d: Domain) => void;
+  useWeb: boolean;
+  setUseWeb: (v: boolean) => void;
   taRef: React.RefObject<HTMLTextAreaElement | null>;
   large?: boolean;
 }
 
-function Composer({ input, setInput, onKey, autoGrow, send, loading, domain, setDomain, taRef, large }: ComposerProps) {
+function Composer({
+  input,
+  setInput,
+  onKey,
+  autoGrow,
+  send,
+  stop,
+  loading,
+  useWeb,
+  setUseWeb,
+  taRef,
+  large,
+}: ComposerProps) {
   return (
     <div className="rounded-3xl border border-border bg-card shadow-[0_4px_24px_-12px_rgba(0,0,0,0.15)] focus-within:border-primary/50 focus-within:shadow-[0_6px_28px_-10px_rgba(204,120,92,0.25)] transition">
       <textarea
         ref={taRef}
         value={input}
-        onChange={(e) => { setInput(e.target.value); autoGrow(); }}
+        onChange={(e) => {
+          setInput(e.target.value);
+          autoGrow();
+        }}
         onKeyDown={onKey}
         rows={1}
-        placeholder="Ask about GST, RBI, legal compliance..."
+        placeholder="Ask anything…"
         className={`w-full bg-transparent resize-none outline-none px-5 ${large ? "pt-5" : "pt-4"} pb-2 text-[15px] placeholder:text-muted-foreground`}
       />
       <div className="flex items-center justify-between px-3 py-2.5 gap-2">
@@ -272,37 +755,40 @@ function Composer({ input, setInput, onKey, autoGrow, send, loading, domain, set
           >
             <Paperclip className="size-4" />
           </button>
-          <div className="flex items-center gap-1">
-            {DOMAINS.map((d) => {
-              const Icon = d.icon;
-              const active = domain === d.id;
-              return (
-                <button
-                  key={d.id}
-                  type="button"
-                  onClick={() => setDomain(d.id)}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium border transition shrink-0 ${
-                    active
-                      ? "bg-primary/10 border-primary/40 text-primary"
-                      : "bg-transparent border-border text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <Icon className="size-3.5" />
-                  {d.label}
-                </button>
-              );
-            })}
-          </div>
+          <button
+            type="button"
+            onClick={() => setUseWeb(!useWeb)}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium border transition shrink-0 ${
+              useWeb
+                ? "bg-primary/10 border-primary/40 text-primary"
+                : "bg-transparent border-border text-muted-foreground hover:text-foreground"
+            }`}
+            title="Ground answer in fresh web sources"
+          >
+            <Globe className="size-3.5" />
+            Web
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={send}
-          disabled={loading || !input.trim()}
-          className="size-9 rounded-full bg-primary text-primary-foreground flex items-center justify-center hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0"
-          aria-label="Send"
-        >
-          {loading ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
-        </button>
+        {loading ? (
+          <button
+            type="button"
+            onClick={stop}
+            className="size-9 rounded-full bg-foreground text-background flex items-center justify-center hover:opacity-90 transition shrink-0"
+            aria-label="Stop"
+          >
+            <Square className="size-3.5 fill-current" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={send}
+            disabled={!input.trim()}
+            className="size-9 rounded-full bg-primary text-primary-foreground flex items-center justify-center hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0"
+            aria-label="Send"
+          >
+            <ArrowUp className="size-4" />
+          </button>
+        )}
       </div>
     </div>
   );

@@ -1,0 +1,6 @@
+# Supabase project config. Only the bits we need for now.
+# `verify_jwt = false` lets the browser call the function with just the anon key
+# (no logged-in user required) for Phase 1.
+
+[functions.chat]
+verify_jwt = false
