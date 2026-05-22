@@ -11,6 +11,10 @@ import {
   Check,
   Copy,
   WandSparkles,
+  Mic,
+  MicOff,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import {
   generateArtifact,
@@ -20,6 +24,7 @@ import {
   type ChatSettings,
   type ChatSource,
 } from "@/lib/chat";
+import { ocrFile, transcribeAudio, isTtsSupported } from "@/lib/media";
 import Markdown from "@/components/Markdown";
 import {
   appendMessage,
@@ -37,6 +42,7 @@ interface UiMessage {
   artifact?: ChatArtifact;
   streaming?: boolean;
   error?: boolean;
+  webRequested?: boolean;
 }
 
 const ARTIFACT_PREFIX = "__ACZEN_ARTIFACT__";
@@ -92,9 +98,16 @@ export default function SearchTab({
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeConv, setActiveConv] = useState<Conversation | null>(null);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const convIdRef = useRef<string | null>(activeConversationId);
   // Tracks the conversation whose messages are currently rendered. When we
   // create a conversation inside send() we set this to the new id so the
@@ -188,7 +201,7 @@ export default function SearchTab({
     const nextHistory: UiMessage[] = [
       ...messages,
       { role: "user", content: q },
-      { role: "assistant", content: "", streaming: true },
+      { role: "assistant", content: "", streaming: true, webRequested: useWeb },
     ];
     setMessages(nextHistory);
     setLoading(true);
@@ -287,6 +300,89 @@ export default function SearchTab({
     });
   };
 
+  const onPickFile = () => {
+    if (ocrLoading || loading) return;
+    fileInputRef.current?.click();
+  };
+
+  const onFileChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (e.target) e.target.value = "";
+    if (!file) return;
+    setOcrError(null);
+    setOcrLoading(true);
+    try {
+      const result = await ocrFile(file);
+      const extracted = result.text.trim();
+      if (!extracted) {
+        setOcrError("No text could be extracted from the file.");
+        return;
+      }
+      const block = `Content from ${file.name}:\n\n${extracted}\n\n`;
+      setInput((prev) => (prev ? `${prev}\n\n${block}` : block));
+      // Resize the textarea so the user can see the inserted text.
+      requestAnimationFrame(() => autoGrow());
+    } catch (err) {
+      setOcrError(err instanceof Error ? err.message : "OCR failed");
+    } finally {
+      setOcrLoading(false);
+    }
+  };
+
+  const startRecording = async () => {
+    if (recording || transcribing || loading) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : MediaRecorder.isTypeSupported("audio/mp4")
+          ? "audio/mp4"
+          : "";
+      const recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(audioChunksRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
+        if (blob.size === 0) return;
+        setTranscribing(true);
+        try {
+          const ext = (recorder.mimeType.split("/")[1] ?? "webm").split(";")[0];
+          const result = await transcribeAudio(blob, `voice.${ext}`);
+          const text = result.text.trim();
+          if (text) {
+            setInput((prev) => (prev ? `${prev} ${text}` : text));
+            requestAnimationFrame(() => autoGrow());
+          }
+        } catch (err) {
+          setOcrError(err instanceof Error ? err.message : "Transcription failed");
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setRecording(true);
+    } catch {
+      setOcrError("Could not access microphone. Allow it in your browser settings.");
+    }
+  };
+
+  const stopRecording = () => {
+    const r = mediaRecorderRef.current;
+    if (r && r.state !== "inactive") r.stop();
+    setRecording(false);
+  };
+
+  const toggleRecording = () => {
+    if (recording) stopRecording();
+    else startRecording();
+  };
+
   const createArtifact = async (afterIndex: number) => {
     if (loading) return;
     const target = messages[afterIndex];
@@ -351,6 +447,13 @@ export default function SearchTab({
 
   return (
     <div className="h-full flex flex-col">
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        accept="application/pdf,image/png,image/jpeg,image/jpg,image/webp,image/gif"
+        onChange={onFileChosen}
+      />
       {!empty && activeConversationId && (
         <div className="border-b border-border/60 px-4 sm:px-6 py-2 flex items-center justify-end">
           <ShareButton
@@ -387,6 +490,13 @@ export default function SearchTab({
                 setUseWeb={setUseWeb}
                 taRef={taRef}
                 large
+                onAttach={onPickFile}
+                ocrLoading={ocrLoading}
+                ocrError={ocrError}
+                clearOcrError={() => setOcrError(null)}
+                recording={recording}
+                transcribing={transcribing}
+                toggleRecording={toggleRecording}
               />
 
               <div className="mt-8">
@@ -442,6 +552,13 @@ export default function SearchTab({
               useWeb={useWeb}
               setUseWeb={setUseWeb}
               taRef={taRef}
+              onAttach={onPickFile}
+              ocrLoading={ocrLoading}
+              ocrError={ocrError}
+              clearOcrError={() => setOcrError(null)}
+              recording={recording}
+              transcribing={transcribing}
+              toggleRecording={toggleRecording}
             />
             <p className="text-[11px] text-muted-foreground text-center mt-2">
               Aczen can make mistakes. Verify important details.
@@ -545,6 +662,16 @@ function MessageBubble({
   msg: UiMessage;
   onGenerateArtifact?: () => void;
 }) {
+  const [speaking, setSpeaking] = useState(false);
+  // Cleanup TTS if this bubble unmounts while reading.
+  useEffect(() => {
+    return () => {
+      if (speaking && typeof window !== "undefined") {
+        window.speechSynthesis?.cancel();
+      }
+    };
+  }, [speaking]);
+
   if (msg.role === "artifact") {
     return <ArtifactBubble msg={msg} />;
   }
@@ -558,6 +685,22 @@ function MessageBubble({
     );
   }
   const isEmpty = !msg.content && msg.streaming;
+  const toggleSpeak = () => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    if (speaking) {
+      window.speechSynthesis.cancel();
+      setSpeaking(false);
+      return;
+    }
+    // Strip markdown markers for a more natural read-aloud.
+    const cleaned = msg.content.replace(/[#`*_~>]/g, "").replace(/\[(.*?)\]\(.*?\)/g, "$1");
+    const utter = new SpeechSynthesisUtterance(cleaned);
+    utter.onend = () => setSpeaking(false);
+    utter.onerror = () => setSpeaking(false);
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utter);
+    setSpeaking(true);
+  };
   return (
     <div className="flex gap-3">
       <Avatar />
@@ -591,15 +734,49 @@ function MessageBubble({
             </div>
           </div>
         )}
-        {onGenerateArtifact && !msg.streaming && !msg.error && (
-          <button
-            type="button"
-            onClick={onGenerateArtifact}
-            className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border bg-card text-muted-foreground hover:border-primary/40 hover:text-primary transition"
-          >
-            <WandSparkles className="size-3.5" />
-            Generate artifact
-          </button>
+        {msg.webRequested &&
+          !msg.streaming &&
+          !msg.error &&
+          (!msg.sources || msg.sources.length === 0) && (
+            <div className="pt-2">
+              <div className="inline-flex items-start gap-2 text-[11px] text-muted-foreground bg-amber-500/10 border border-amber-500/30 rounded-md px-2.5 py-1.5">
+                <Globe className="size-3.5 text-amber-500 mt-px shrink-0" />
+                <span>
+                  Web search returned no sources. The answer above is unsourced — set{" "}
+                  <code className="font-mono">APIFY_TOKEN</code> in your Supabase function
+                  secrets to enable web grounding.
+                </span>
+              </div>
+            </div>
+          )}
+        {!msg.streaming && !msg.error && msg.content && (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {isTtsSupported() && (
+              <button
+                type="button"
+                onClick={toggleSpeak}
+                className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition ${
+                  speaking
+                    ? "border-primary/40 bg-primary/10 text-primary"
+                    : "border-border bg-card text-muted-foreground hover:border-primary/40 hover:text-primary"
+                }`}
+                title={speaking ? "Stop reading" : "Read aloud"}
+              >
+                {speaking ? <VolumeX className="size-3.5" /> : <Volume2 className="size-3.5" />}
+                {speaking ? "Stop" : "Read aloud"}
+              </button>
+            )}
+            {onGenerateArtifact && (
+              <button
+                type="button"
+                onClick={onGenerateArtifact}
+                className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border bg-card text-muted-foreground hover:border-primary/40 hover:text-primary transition"
+              >
+                <WandSparkles className="size-3.5" />
+                Generate artifact
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -607,6 +784,8 @@ function MessageBubble({
 }
 
 function SourceCard({ source, index }: { source: ChatSource; index: number }) {
+  const [imgSrc, setImgSrc] = useState(source.imageUrl ?? faviconFor(source.link));
+  const [failed, setFailed] = useState(false);
   return (
     <a
       href={source.link}
@@ -614,15 +793,18 @@ function SourceCard({ source, index }: { source: ChatSource; index: number }) {
       rel="noreferrer"
       className="block overflow-hidden rounded-lg border border-border bg-card hover:border-primary/40 transition group"
     >
-      {source.imageUrl && (
+      {imgSrc && !failed && (
         <div className="aspect-[16/9] overflow-hidden bg-accent/50 border-b border-border/60">
           <img
-            src={source.imageUrl}
+            src={imgSrc}
             alt=""
             loading="lazy"
             referrerPolicy="no-referrer"
-            onError={(e) => {
-              e.currentTarget.parentElement?.classList.add("hidden");
+            onError={() => {
+              // Try the favicon as a fallback. If that also fails, hide the box.
+              const fallback = faviconFor(source.link);
+              if (fallback && fallback !== imgSrc) setImgSrc(fallback);
+              else setFailed(true);
             }}
             className="h-full w-full object-cover transition group-hover:scale-[1.02]"
           />
@@ -649,6 +831,15 @@ function safeHost(link: string) {
     return new URL(link).hostname.replace(/^www\./, "");
   } catch {
     return link;
+  }
+}
+
+function faviconFor(link: string): string | undefined {
+  try {
+    const host = new URL(link).hostname;
+    return `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(host)}`;
+  } catch {
+    return undefined;
   }
 }
 
@@ -717,6 +908,13 @@ interface ComposerProps {
   setUseWeb: (v: boolean) => void;
   taRef: React.RefObject<HTMLTextAreaElement | null>;
   large?: boolean;
+  onAttach: () => void;
+  ocrLoading: boolean;
+  ocrError: string | null;
+  clearOcrError: () => void;
+  recording: boolean;
+  transcribing: boolean;
+  toggleRecording: () => void;
 }
 
 function Composer({
@@ -731,9 +929,47 @@ function Composer({
   setUseWeb,
   taRef,
   large,
+  onAttach,
+  ocrLoading,
+  ocrError,
+  clearOcrError,
+  recording,
+  transcribing,
+  toggleRecording,
 }: ComposerProps) {
   return (
     <div className="rounded-3xl border border-border bg-card shadow-[0_4px_24px_-12px_rgba(0,0,0,0.15)] focus-within:border-primary/50 focus-within:shadow-[0_6px_28px_-10px_rgba(204,120,92,0.25)] transition">
+      {(ocrLoading || transcribing || recording || ocrError) && (
+        <div className="px-5 pt-3 -mb-1">
+          {ocrLoading && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-primary">
+              <Loader2 className="size-3 animate-spin" />
+              Extracting text from file…
+            </span>
+          )}
+          {transcribing && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-primary">
+              <Loader2 className="size-3 animate-spin" />
+              Transcribing audio…
+            </span>
+          )}
+          {recording && !transcribing && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-destructive">
+              <span className="size-2 rounded-full bg-destructive animate-pulse" />
+              Recording — tap mic again to stop
+            </span>
+          )}
+          {ocrError && (
+            <span
+              className="inline-flex items-center gap-2 text-xs text-destructive cursor-pointer"
+              onClick={clearOcrError}
+              title="Dismiss"
+            >
+              {ocrError}
+            </span>
+          )}
+        </div>
+      )}
       <textarea
         ref={taRef}
         value={input}
@@ -750,10 +986,37 @@ function Composer({
         <div className="flex items-center gap-1 overflow-x-auto">
           <button
             type="button"
-            className="p-2 rounded-lg text-muted-foreground hover:bg-accent shrink-0"
-            aria-label="Attach"
+            onClick={onAttach}
+            disabled={ocrLoading || loading}
+            className="p-2 rounded-lg text-muted-foreground hover:bg-accent shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+            aria-label="Attach file (OCR)"
+            title="Attach a PDF or image — Mistral OCR will extract text"
           >
-            <Paperclip className="size-4" />
+            {ocrLoading ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Paperclip className="size-4" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={toggleRecording}
+            disabled={transcribing || loading}
+            className={`p-2 rounded-lg shrink-0 transition disabled:opacity-50 disabled:cursor-not-allowed ${
+              recording
+                ? "bg-destructive/15 text-destructive hover:bg-destructive/20"
+                : "text-muted-foreground hover:bg-accent"
+            }`}
+            aria-label={recording ? "Stop recording" : "Record voice"}
+            title={recording ? "Stop recording" : "Record voice — Mistral Voxtral will transcribe"}
+          >
+            {transcribing ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : recording ? (
+              <MicOff className="size-4" />
+            ) : (
+              <Mic className="size-4" />
+            )}
           </button>
           <button
             type="button"

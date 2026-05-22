@@ -199,28 +199,42 @@ async function fetchWebSources(query: string): Promise<Source[]> {
   }
 }
 
+// Mimics a real browser so news sites and CDNs don't gate the HTML behind a UA
+// allowlist. Generic "Bot" UAs get 403'd by Cloudflare/Akamai on many publishers.
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
 async function fetchPageImage(link: string): Promise<string | undefined> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2500);
+  const timeout = setTimeout(() => controller.abort(), 4500);
   try {
     const res = await fetch(link, {
       headers: {
-        "User-Agent": "AczenBot/1.0 (+https://aczen.ai)",
-        Accept: "text/html",
+        "User-Agent": BROWSER_UA,
+        Accept: "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
       },
+      redirect: "follow",
       signal: controller.signal,
     });
-    if (!res.ok) return undefined;
-    const html = (await res.text()).slice(0, 120000);
-    const image = firstMetaContent(
-      html,
-      "property",
-      "og:image",
-    ) ?? firstMetaContent(html, "name", "twitter:image");
-    if (!image) return undefined;
-    return new URL(image, link).toString();
+    if (!res.ok) return faviconFor(link);
+    const html = (await res.text()).slice(0, 200000);
+    const image =
+      firstMetaContent(html, "property", "og:image:secure_url") ??
+      firstMetaContent(html, "property", "og:image:url") ??
+      firstMetaContent(html, "property", "og:image") ??
+      firstMetaContent(html, "name", "twitter:image:src") ??
+      firstMetaContent(html, "name", "twitter:image") ??
+      firstLinkHref(html, "image_src") ??
+      firstArticleImage(html);
+    if (!image) return faviconFor(link);
+    try {
+      return new URL(image, link).toString();
+    } catch {
+      return faviconFor(link);
+    }
   } catch {
-    return undefined;
+    return faviconFor(link);
   } finally {
     clearTimeout(timeout);
   }
@@ -233,6 +247,30 @@ function firstMetaContent(html: string, attr: "name" | "property", value: string
   );
   const match = html.match(pattern);
   return match?.[1] ?? match?.[2];
+}
+
+function firstLinkHref(html: string, rel: string) {
+  const match = html.match(
+    new RegExp(`<link[^>]+rel=["']${rel}["'][^>]+href=["']([^"']+)["']`, "i"),
+  );
+  return match?.[1];
+}
+
+function firstArticleImage(html: string) {
+  // Last-resort: pull the src of the first <img> with an http(s) source — most
+  // hero images live near the top of the body and have absolute URLs.
+  const match = html.match(/<img[^>]+src=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i);
+  return match?.[1];
+}
+
+function faviconFor(link: string): string | undefined {
+  try {
+    const host = new URL(link).hostname;
+    // Google's favicon service — high availability, served over HTTPS, allows hotlinking.
+    return `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(host)}`;
+  } catch {
+    return undefined;
+  }
 }
 
 function firstString(...values: unknown[]) {

@@ -98,7 +98,7 @@ function SharedConversation() {
           </span>
         </div>
         <Link
-          to="/"
+          to="/chat"
           className="text-sm bg-primary text-primary-foreground px-3.5 py-1.5 rounded-lg font-medium hover:opacity-90 transition"
         >
           Try Aczen

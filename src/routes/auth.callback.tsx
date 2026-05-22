@@ -31,7 +31,7 @@ function AuthCallback() {
           console.warn("claim failed", err);
         }
       }
-      navigate({ to: "/" });
+      navigate({ to: "/chat" });
     })();
     return () => {
       cancelled = true;

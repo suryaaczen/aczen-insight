@@ -1,80 +1,30 @@
-import { useEffect, useState, type ComponentType, type ReactNode } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
-  MessageSquarePlus,
   Sparkles,
-  Code2,
-  CreditCard,
-  PanelLeftClose,
-  PanelLeft,
   Sun,
   Moon,
-  SlidersHorizontal,
-  Loader2,
+  ArrowRight,
+  Globe,
+  WandSparkles,
+  ShieldCheck,
+  Code2,
+  Zap,
+  MessageSquare,
+  LineChart,
 } from "lucide-react";
-import SearchTab from "@/components/SearchTab";
-import DocsTab from "@/components/DocsTab";
-import PricingTab from "@/components/PricingTab";
-import QuotaChip from "@/components/QuotaChip";
-import RecentsList from "@/components/RecentsList";
-import AccountMenu from "@/components/AccountMenu";
-import { useAuth, claimAnonymousChats, signInWithGoogle } from "@/lib/auth";
-import type { ChatSettings } from "@/lib/chat";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
-import { Textarea } from "@/components/ui/textarea";
+import { useAuth, signInWithGoogle } from "@/lib/auth";
 
 export const Route = createFileRoute("/")({
-  component: Index,
+  component: Home,
 });
 
-type TabId = "search" | "docs" | "pricing";
-
-const NAV: { id: TabId; label: string; icon: ComponentType<{ className?: string }> }[] = [
-  { id: "search", label: "New chat", icon: MessageSquarePlus },
-  { id: "docs", label: "API docs", icon: Code2 },
-  { id: "pricing", label: "Pricing", icon: CreditCard },
-];
-
-const DEFAULT_CHAT_SETTINGS: ChatSettings = {
-  model: "mistral-large-latest",
-  contextWindow: "16k",
-  systemInstructions: "",
-  temperature: 0.5,
-  maxTokens: 2048,
-  reasoningEffort: "medium",
-};
-
-const MODEL_OPTIONS = [
-  { value: "mistral-large-latest", label: "Aczen 1T" },
-  { value: "mistral-medium-latest", label: "Aczen 2T" },
-  { value: "mistral-small-latest", label: "Aczen 0T" },
-  { value: "magistral-medium-latest", label: "Aczen 2TL" },
-  { value: "codestral-latest", label: "Agent Code (N/A)" },
-];
-
-function loadChatSettings(): ChatSettings {
-  if (typeof window === "undefined") return DEFAULT_CHAT_SETTINGS;
-  try {
-    const raw = window.localStorage.getItem("aczen-chat-settings");
-    if (!raw) return DEFAULT_CHAT_SETTINGS;
-    return { ...DEFAULT_CHAT_SETTINGS, ...JSON.parse(raw) };
-  } catch {
-    return DEFAULT_CHAT_SETTINGS;
-  }
-}
-
-function Index() {
-  const [tab, setTab] = useState<TabId>("search");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+function Home() {
   const [dark, setDark] = useState(false);
-  const [chatSettings, setChatSettings] = useState<ChatSettings>(loadChatSettings);
-  const [quotaTick, setQuotaTick] = useState(0);
-  const [activeConvId, setActiveConvId] = useState<string | null>(null);
-  const [recentsRefresh, setRecentsRefresh] = useState(0);
-  const { user, loading: authLoading } = useAuth();
+  const [signingIn, setSigningIn] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const { user, loading } = useAuth();
+  const navigate = useNavigate();
 
   useEffect(() => {
     const root = document.documentElement;
@@ -82,444 +32,340 @@ function Index() {
     else root.classList.remove("dark");
   }, [dark]);
 
-  useEffect(() => {
-    window.localStorage.setItem("aczen-chat-settings", JSON.stringify(chatSettings));
-  }, [chatSettings]);
-
-  const updateChatSettings = <K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) => {
-    setChatSettings((current) => ({ ...current, [key]: value }));
-  };
-
-  // When a user signs in, claim their anonymous chats and refresh the list.
-  useEffect(() => {
-    if (!user) return;
-    claimAnonymousChats(user).then((n) => {
-      if (n > 0) setRecentsRefresh((r) => r + 1);
-    });
-  }, [user?.id]);
-
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
-        <Loader2 className="size-6 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <SignInScreen dark={dark} onToggleTheme={() => setDark((d) => !d)} />;
-  }
-
-  const titles: Record<TabId, string> = {
-    search: "Aczen",
-    docs: "API documentation",
-    pricing: "Plans & pricing",
-  };
-
-  const startNewChat = () => {
-    setActiveConvId(null);
-    setTab("search");
-  };
-
-  return (
-    <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
-      {/* Sidebar */}
-      <aside
-        className={`${
-          sidebarOpen ? "w-64" : "w-0"
-        } shrink-0 transition-[width] duration-300 ease-out overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground`}
-      >
-        <div className="w-64 h-full flex flex-col">
-          <div className="px-3 pt-3 pb-2 flex items-center justify-between">
-            <div className="flex items-center gap-2 px-2 py-1.5">
-              <div className="size-7 rounded-md bg-primary flex items-center justify-center">
-                <Sparkles className="size-4 text-primary-foreground" />
-              </div>
-              <span className="font-display text-lg leading-none">Aczen</span>
-            </div>
-            <button
-              onClick={() => setSidebarOpen(false)}
-              className="p-1.5 rounded-md text-muted-foreground hover:bg-sidebar-accent"
-              aria-label="Close sidebar"
-            >
-              <PanelLeftClose className="size-4" />
-            </button>
-          </div>
-
-          <div className="px-3">
-            <button
-              onClick={startNewChat}
-              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-sidebar-accent/60 hover:bg-sidebar-accent transition"
-            >
-              <MessageSquarePlus className="size-4 text-primary" />
-              New chat
-            </button>
-          </div>
-
-          <nav className="px-2 py-3 space-y-0.5">
-            {NAV.slice(1).map((n) => {
-              const Icon = n.icon;
-              const active = tab === n.id;
-              return (
-                <button
-                  key={n.id}
-                  onClick={() => setTab(n.id)}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition ${
-                    active
-                      ? "bg-sidebar-accent text-sidebar-foreground"
-                      : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
-                  }`}
-                >
-                  <Icon className="size-4" />
-                  {n.label}
-                </button>
-              );
-            })}
-          </nav>
-
-          {settingsOpen ? (
-            <ModelSettingsPanel
-              settings={chatSettings}
-              onChange={updateChatSettings}
-              onReset={() => setChatSettings(DEFAULT_CHAT_SETTINGS)}
-            />
-          ) : (
-            <>
-              <div className="px-4 mt-2 mb-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-                Recents
-              </div>
-              <div className="px-2 flex-1 overflow-y-auto">
-                <RecentsList
-                  activeId={activeConvId}
-                  refreshKey={recentsRefresh}
-                  onSelect={(id) => {
-                    setActiveConvId(id);
-                    setTab("search");
-                  }}
-                  onChanged={() => setRecentsRefresh((r) => r + 1)}
-                />
-              </div>
-            </>
-          )}
-
-          <div className="border-t border-sidebar-border p-2">
-            <AccountMenu />
-          </div>
-        </div>
-      </aside>
-
-      {/* Main */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 px-3 sm:px-5 flex items-center justify-between border-b border-border/60">
-          <div className="flex items-center gap-2">
-            {!sidebarOpen && (
-              <button
-                onClick={() => setSidebarOpen(true)}
-                className="p-1.5 rounded-md text-muted-foreground hover:bg-accent"
-                aria-label="Open sidebar"
-              >
-                <PanelLeft className="size-4" />
-              </button>
-            )}
-            <span className="font-display text-lg">{titles[tab]}</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <QuotaChip tick={quotaTick} onUpgrade={() => setTab("pricing")} />
-            <button
-              onClick={() => setDark((d) => !d)}
-              className="p-2 rounded-md text-muted-foreground hover:bg-accent"
-              aria-label="Toggle theme"
-            >
-              {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
-            </button>
-            <button
-              onClick={() => {
-                setSettingsOpen((open) => !open);
-                setSidebarOpen(true);
-              }}
-              className={`p-2 rounded-md hover:bg-accent ${
-                settingsOpen ? "text-primary bg-accent" : "text-muted-foreground"
-              }`}
-              aria-label="Toggle model settings"
-            >
-              <SlidersHorizontal className="size-4" />
-            </button>
-            <button
-              onClick={() => setTab("pricing")}
-              className="hidden sm:inline-flex text-sm bg-primary text-primary-foreground px-3.5 py-1.5 rounded-lg font-medium hover:opacity-90 transition"
-            >
-              Upgrade
-            </button>
-          </div>
-        </header>
-
-        <main className="flex-1 overflow-y-auto">
-          {tab === "search" && (
-            <SearchTab
-              onMessageSent={() => setQuotaTick((t) => t + 1)}
-              activeConversationId={activeConvId}
-              onConversationChange={setActiveConvId}
-              onConversationListChanged={() => setRecentsRefresh((r) => r + 1)}
-              settings={chatSettings}
-            />
-          )}
-          {tab !== "search" && (
-            <div className="max-w-4xl mx-auto px-4 sm:px-8 py-10">
-              {tab === "docs" && <DocsTab />}
-              {tab === "pricing" && <PricingTab />}
-            </div>
-          )}
-        </main>
-      </div>
-    </div>
-  );
-}
-
-function ModelSettingsPanel({
-  settings,
-  onChange,
-  onReset,
-}: {
-  settings: ChatSettings;
-  onChange: <K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) => void;
-  onReset: () => void;
-}) {
-  return (
-    <div className="flex-1 overflow-y-auto px-3 pb-3">
-      <div className="px-1 mt-2 mb-3 flex items-center justify-between">
-        <div>
-          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            Model settings
-          </div>
-          <div className="text-xs text-muted-foreground mt-0.5">Updates apply to the next send.</div>
-        </div>
-        <button
-          type="button"
-          onClick={onReset}
-          className="text-xs text-muted-foreground hover:text-sidebar-foreground"
-        >
-          Reset
-        </button>
-      </div>
-
-      <div className="space-y-4">
-        <Field label="Model">
-          <Select value={settings.model} onValueChange={(v) => onChange("model", v)}>
-            <SelectTrigger className="h-8 bg-background/50">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {MODEL_OPTIONS.map((model) => (
-                <SelectItem key={model.value} value={model.value}>
-                  {model.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
-
-        <Field label="Context window">
-          <Select value={settings.contextWindow} onValueChange={(v) => onChange("contextWindow", v)}>
-            <SelectTrigger className="h-8 bg-background/50">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="4k">4K</SelectItem>
-              <SelectItem value="8k">8K</SelectItem>
-              <SelectItem value="16k">16K</SelectItem>
-              <SelectItem value="32k">32K</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
-
-        <Field label="System instructions">
-          <Textarea
-            value={settings.systemInstructions}
-            onChange={(e) => onChange("systemInstructions", e.target.value)}
-            rows={5}
-            placeholder="How should Aczen respond?"
-            className="min-h-28 resize-none bg-background/50 text-sm"
-          />
-        </Field>
-
-        <SliderField
-          label="Temperature"
-          value={settings.temperature}
-          display={settings.temperature.toFixed(1)}
-          min={0}
-          max={1.5}
-          step={0.1}
-          onChange={(v) => onChange("temperature", v)}
-        />
-
-        <SliderField
-          label="Max tokens"
-          value={settings.maxTokens}
-          display={settings.maxTokens.toLocaleString()}
-          min={256}
-          max={8192}
-          step={256}
-          onChange={(v) => onChange("maxTokens", v)}
-        />
-
-        <Field label="Reasoning effort">
-          <Select
-            value={settings.reasoningEffort}
-            onValueChange={(v) => onChange("reasoningEffort", v as ChatSettings["reasoningEffort"])}
-          >
-            <SelectTrigger className="h-8 bg-background/50">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="low">Low</SelectItem>
-              <SelectItem value="medium">Medium</SelectItem>
-              <SelectItem value="high">High</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
-      </div>
-    </div>
-  );
-}
-
-function SignInScreen({
-  dark,
-  onToggleTheme,
-}: {
-  dark: boolean;
-  onToggleTheme: () => void;
-}) {
-  const [signingIn, setSigningIn] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const goToChat = () => navigate({ to: "/chat" });
 
   const signIn = async () => {
-    setError(null);
+    setAuthError(null);
     setSigningIn(true);
     try {
       await signInWithGoogle();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Sign-in failed.");
+      setAuthError(e instanceof Error ? e.message : "Sign-in failed.");
       setSigningIn(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-background text-foreground">
-      <header className="h-14 px-3 sm:px-6 flex items-center justify-between border-b border-border/60">
+    <div className="min-h-screen bg-background text-foreground">
+      {/* Header */}
+      <header className="sticky top-0 z-20 h-14 px-4 sm:px-8 flex items-center justify-between border-b border-border/60 bg-background/85 backdrop-blur">
         <div className="flex items-center gap-2">
           <div className="size-7 rounded-md bg-primary flex items-center justify-center">
             <Sparkles className="size-4 text-primary-foreground" />
           </div>
           <span className="font-display text-lg">Aczen</span>
         </div>
-        <button
-          onClick={onToggleTheme}
-          className="p-2 rounded-md text-muted-foreground hover:bg-accent"
-          aria-label="Toggle theme"
-        >
-          {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
-        </button>
+        <nav className="hidden sm:flex items-center gap-6 text-sm text-muted-foreground">
+          <Link
+            to="/finance"
+            className="inline-flex items-center gap-1.5 hover:text-foreground transition"
+          >
+            <LineChart className="size-3.5" />
+            Finance
+          </Link>
+          <a href="#features" className="hover:text-foreground transition">Features</a>
+          <a href="#how" className="hover:text-foreground transition">How it works</a>
+          <a href="#pricing" className="hover:text-foreground transition">Pricing</a>
+        </nav>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setDark((d) => !d)}
+            className="p-2 rounded-md text-muted-foreground hover:bg-accent"
+            aria-label="Toggle theme"
+          >
+            {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          </button>
+          {!loading && user ? (
+            <button
+              onClick={goToChat}
+              className="text-sm bg-primary text-primary-foreground px-3.5 py-1.5 rounded-lg font-medium hover:opacity-90 transition inline-flex items-center gap-1.5"
+            >
+              Open chat
+              <ArrowRight className="size-3.5" />
+            </button>
+          ) : (
+            <button
+              onClick={signIn}
+              disabled={signingIn}
+              className="text-sm bg-primary text-primary-foreground px-3.5 py-1.5 rounded-lg font-medium hover:opacity-90 transition disabled:opacity-60"
+            >
+              {signingIn ? "Signing in…" : "Sign in"}
+            </button>
+          )}
+        </div>
       </header>
 
-      <main className="flex-1 flex items-center justify-center px-4 py-10">
-        <div className="w-full max-w-sm text-center">
-          <div className="inline-flex items-center justify-center size-14 rounded-2xl bg-primary/10 text-primary mb-5">
-            <Sparkles className="size-7" />
-          </div>
-          <h1 className="font-display text-3xl tracking-tight">Welcome to Aczen</h1>
-          <p className="mt-3 text-sm text-muted-foreground">
-            Sign in to start chatting — your conversations are saved to your account
-            so you can pick up where you left off.
-          </p>
-
-          <button
-            onClick={signIn}
-            disabled={signingIn}
-            className="mt-7 w-full inline-flex items-center justify-center gap-2.5 px-4 py-2.5 rounded-xl border border-border bg-card hover:border-primary/40 hover:bg-accent/40 transition text-sm font-medium disabled:opacity-60"
-          >
-            {signingIn ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <GoogleIcon className="size-4" />
+      {/* Hero */}
+      <section className="relative overflow-hidden">
+        <div className="absolute inset-0 -z-10">
+          <div className="absolute -top-32 -left-24 size-96 rounded-full bg-primary/20 blur-3xl" />
+          <div className="absolute -top-20 right-0 size-80 rounded-full bg-primary/10 blur-3xl" />
+        </div>
+        <div className="max-w-6xl mx-auto px-4 sm:px-8 pt-16 sm:pt-24 pb-12 grid lg:grid-cols-2 gap-10 items-center">
+          <div>
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border border-primary/30 bg-primary/10 text-primary">
+              <Sparkles className="size-3" />
+              aczenai-32k · now in preview
+            </span>
+            <h1 className="mt-5 font-display text-4xl sm:text-5xl md:text-6xl leading-[1.05] tracking-tight">
+              The AI assistant built for{" "}
+              <span className="text-primary">Indian work</span>.
+            </h1>
+            <p className="mt-5 text-base sm:text-lg text-muted-foreground max-w-xl">
+              Aczen answers anything — code, writing, math — with deeper expertise on Indian
+              legal, finance, and banking. Web-grounded sources, visual artifacts, and a 32K
+              context window.
+            </p>
+            <div className="mt-7 flex flex-wrap gap-3">
+              {user ? (
+                <button
+                  onClick={goToChat}
+                  className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-xl font-medium hover:opacity-90 transition"
+                >
+                  Open chat
+                  <ArrowRight className="size-4" />
+                </button>
+              ) : (
+                <button
+                  onClick={signIn}
+                  disabled={signingIn}
+                  className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-xl font-medium hover:opacity-90 transition disabled:opacity-60"
+                >
+                  {signingIn ? "Signing in…" : "Start chatting — it's free"}
+                  <ArrowRight className="size-4" />
+                </button>
+              )}
+              <a
+                href="#features"
+                className="inline-flex items-center gap-2 border border-border bg-card px-5 py-2.5 rounded-xl font-medium hover:border-primary/40 hover:text-primary transition"
+              >
+                See what it does
+              </a>
+            </div>
+            {authError && (
+              <p className="mt-3 text-xs text-destructive">{authError}</p>
             )}
-            Continue with Google
-          </button>
+            <div className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5">
+                <ShieldCheck className="size-3.5 text-primary" />
+                Sign in with Google
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <Zap className="size-3.5 text-primary" />
+                Streaming responses
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <Globe className="size-3.5 text-primary" />
+                Live web sources
+              </span>
+            </div>
+          </div>
+          <HeroMockup />
+        </div>
+      </section>
 
-          {error && (
-            <p className="mt-3 text-xs text-destructive">{error}</p>
-          )}
-
-          <p className="mt-8 text-[11px] text-muted-foreground">
-            By signing in, you agree to use Aczen for personal and educational use.
+      {/* Features */}
+      <section id="features" className="max-w-6xl mx-auto px-4 sm:px-8 py-16">
+        <div className="text-center max-w-2xl mx-auto">
+          <h2 className="font-display text-3xl sm:text-4xl tracking-tight">
+            Built for real work, not demos
+          </h2>
+          <p className="mt-3 text-muted-foreground">
+            Every chat is saved, sharable, and grounded in fresh information when you need it.
           </p>
         </div>
-      </main>
+        <div className="mt-10 grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <Feature
+            icon={Globe}
+            title="Fresh web sources"
+            body="Toggle Web and Aczen pulls live results from across the internet, then cites them inline so you can verify."
+          />
+          <Feature
+            icon={WandSparkles}
+            title="Visual artifacts"
+            body="Turn any explanation into a clean SVG diagram — flows, architectures, comparisons — with one click."
+          />
+          <Feature
+            icon={MessageSquare}
+            title="Chats that stick"
+            body="Conversations save to your account and rise to the top of your recents as you reply."
+          />
+          <Feature
+            icon={ShieldCheck}
+            title="Indian expertise"
+            body="GST, SEBI, RBI, TDS / TCS, NI Act — Aczen knows the local regulations and case context."
+          />
+          <Feature
+            icon={Code2}
+            title="Developer-ready"
+            body={`Drop in the @aczenai/32k SDK and stream completions from Node, Deno, Bun, or the browser.`}
+          />
+          <Feature
+            icon={Zap}
+            title="32K context"
+            body="Long documents, multi-turn debugging, sprawling code reviews — Aczen keeps the thread."
+          />
+        </div>
+      </section>
+
+      {/* How it works */}
+      <section id="how" className="border-y border-border/60 bg-card/30">
+        <div className="max-w-6xl mx-auto px-4 sm:px-8 py-16">
+          <div className="text-center max-w-2xl mx-auto">
+            <h2 className="font-display text-3xl sm:text-4xl tracking-tight">
+              From question to answer in three steps
+            </h2>
+          </div>
+          <div className="mt-10 grid md:grid-cols-3 gap-6">
+            <Step
+              n={1}
+              title="Ask anything"
+              body="Type a question, paste a doc, or pick a suggestion. Add Web to ground the answer in fresh sources."
+            />
+            <Step
+              n={2}
+              title="Stream the answer"
+              body="Tokens stream in real time, with sources and code blocks formatted cleanly as they arrive."
+            />
+            <Step
+              n={3}
+              title="Iterate or share"
+              body="Generate an artifact, share a read-only link, or come back later — your history is saved."
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* Pricing teaser */}
+      <section id="pricing" className="max-w-6xl mx-auto px-4 sm:px-8 py-16">
+        <div className="text-center max-w-2xl mx-auto">
+          <h2 className="font-display text-3xl sm:text-4xl tracking-tight">
+            Free to try. Pay only when you scale.
+          </h2>
+          <p className="mt-3 text-muted-foreground">
+            Twenty messages a day on the house. Upgrade for unlimited use, faster models, and
+            API access.
+          </p>
+          <div className="mt-7">
+            {user ? (
+              <button
+                onClick={goToChat}
+                className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-xl font-medium hover:opacity-90 transition"
+              >
+                Open chat
+                <ArrowRight className="size-4" />
+              </button>
+            ) : (
+              <button
+                onClick={signIn}
+                disabled={signingIn}
+                className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-xl font-medium hover:opacity-90 transition disabled:opacity-60"
+              >
+                {signingIn ? "Signing in…" : "Sign in and start"}
+                <ArrowRight className="size-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="border-t border-border/60">
+        <div className="max-w-6xl mx-auto px-4 sm:px-8 py-8 flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <div className="size-6 rounded-md bg-primary flex items-center justify-center">
+              <Sparkles className="size-3.5 text-primary-foreground" />
+            </div>
+            <span className="font-display text-sm text-foreground">Aczen</span>
+            <span className="ml-2">© {new Date().getFullYear()} Aczen Intelligence</span>
+          </div>
+          <div className="flex items-center gap-5">
+            <Link to="/chat" className="hover:text-foreground transition">Chat</Link>
+            <Link to="/finance" className="hover:text-foreground transition">Finance</Link>
+            <a href="#features" className="hover:text-foreground transition">Features</a>
+            <a href="#pricing" className="hover:text-foreground transition">Pricing</a>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
 
-function GoogleIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path
-        fill="#4285F4"
-        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-      />
-      <path
-        fill="#34A853"
-        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.99.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-      />
-      <path
-        fill="#FBBC05"
-        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-      />
-      <path
-        fill="#EA4335"
-        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-      />
-    </svg>
-  );
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="space-y-2">
-      <Label className="text-xs text-sidebar-foreground/80">{label}</Label>
-      {children}
-    </div>
-  );
-}
-
-function SliderField({
-  label,
-  value,
-  display,
-  min,
-  max,
-  step,
-  onChange,
+function Feature({
+  icon: Icon,
+  title,
+  body,
 }: {
-  label: string;
-  value: number;
-  display: string;
-  min: number;
-  max: number;
-  step: number;
-  onChange: (value: number) => void;
+  icon: React.ComponentType<{ className?: string }>;
+  title: string;
+  body: string;
 }) {
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <Label className="text-xs text-sidebar-foreground/80">{label}</Label>
-        <span className="text-xs tabular-nums text-muted-foreground">{display}</span>
+    <div className="rounded-2xl border border-border bg-card p-5 hover:border-primary/40 transition">
+      <div className="inline-flex items-center justify-center size-9 rounded-xl bg-primary/10 text-primary">
+        <Icon className="size-4" />
       </div>
-      <Slider
-        value={[value]}
-        min={min}
-        max={max}
-        step={step}
-        onValueChange={([next]) => onChange(next)}
-      />
+      <h3 className="mt-4 font-display text-lg">{title}</h3>
+      <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">{body}</p>
+    </div>
+  );
+}
+
+function Step({ n, title, body }: { n: number; title: string; body: string }) {
+  return (
+    <div className="rounded-2xl border border-border bg-background p-6">
+      <div className="text-xs font-semibold text-primary">Step {n}</div>
+      <h3 className="mt-2 font-display text-xl">{title}</h3>
+      <p className="mt-2 text-sm text-muted-foreground leading-relaxed">{body}</p>
+    </div>
+  );
+}
+
+function HeroMockup() {
+  return (
+    <div className="relative">
+      <div className="absolute -inset-4 bg-gradient-to-br from-primary/20 to-transparent rounded-3xl blur-2xl -z-10" />
+      <div className="rounded-2xl border border-border bg-card shadow-[0_30px_80px_-30px_rgba(0,0,0,0.35)] overflow-hidden">
+        <div className="h-9 px-3 flex items-center gap-1.5 border-b border-border/60 bg-background/60">
+          <span className="size-2.5 rounded-full bg-destructive/60" />
+          <span className="size-2.5 rounded-full bg-amber-400/70" />
+          <span className="size-2.5 rounded-full bg-emerald-500/70" />
+          <span className="ml-3 text-[11px] text-muted-foreground">aczen.ai / chat</span>
+        </div>
+        <div className="p-5 space-y-4 text-sm">
+          <div className="flex justify-end">
+            <div className="max-w-[80%] rounded-2xl rounded-tr-md bg-accent text-accent-foreground px-3.5 py-2 text-[13px]">
+              Summarise Section 138 of the NI Act for a cheque bounce notice.
+            </div>
+          </div>
+          <div className="flex gap-2.5">
+            <div className="size-7 shrink-0 rounded-full bg-primary/15 text-primary flex items-center justify-center">
+              <Sparkles className="size-3.5" />
+            </div>
+            <div className="flex-1 space-y-2">
+              <div className="text-[13px] leading-relaxed text-foreground">
+                Section 138 makes cheque dishonour a criminal offence when the cheque is
+                returned for insufficient funds or because it exceeds the arrangement with the
+                bank…
+              </div>
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <div className="rounded-md border border-border bg-background px-2.5 py-2">
+                  <div className="aspect-[16/9] rounded bg-gradient-to-br from-primary/30 to-primary/5 mb-2" />
+                  <div className="text-[10px] text-muted-foreground">[1] indiacode.nic.in</div>
+                </div>
+                <div className="rounded-md border border-border bg-background px-2.5 py-2">
+                  <div className="aspect-[16/9] rounded bg-gradient-to-br from-amber-400/30 to-amber-400/5 mb-2" />
+                  <div className="text-[10px] text-muted-foreground">[2] rbi.org.in</div>
+                </div>
+              </div>
+              <div className="inline-flex items-center gap-1.5 text-[11px] text-primary px-2 py-1 rounded-md border border-primary/30 bg-primary/10 mt-1">
+                <WandSparkles className="size-3" />
+                Generate artifact
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
